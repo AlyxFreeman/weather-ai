@@ -61,7 +61,7 @@ import os
 # 云端部署时通过环境变量指定端口和主机
 FLASK_HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
 FLASK_PORT = int(os.environ.get("PORT", 5000))
-FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "True") == "True"
+FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "False") == "True"
 
 # 请求超时（秒）
 REQUEST_TIMEOUT = 10

@@ -1,0 +1,61 @@
+
+==================================================
+  天气AI预测平台
+  访问: http://127.0.0.1:5000
+  AI模式: 统计融合（未配置AI Key）
+  数据源: Open-Meteo, Open-Meteo GFS, Open-Meteo ECMWF, 7Timer!, wttr.in
+  免费源: 5 个
+  需Key源: 0 个
+==================================================
+
+ * Serving Flask app 'app'
+ * Debug mode: on
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 264-649-301
+127.0.0.1 - - [03/Jul/2026 20:27:28] "HEAD / HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:27:42] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:27:43] "GET /static/lib/leaflet/leaflet.css HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:27:43] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:27:43] "GET /static/lib/leaflet/leaflet.js HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:27:43] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:27:43] "GET /api/sources HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:28:39] "GET /static/lib/leaflet/leaflet.css HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:28:39] "GET /static/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:28:39] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /static/lib/leaflet/leaflet.css HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /static/lib/leaflet/leaflet.js HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /static/style.css HTTP/1.1" 304 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:32:11] "GET /api/sources HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:32:39] "POST /api/route-weather HTTP/1.1" 200 -
+Traceback (most recent call last):
+  File "C:\Users\ZiyuanLiu\WorkBuddy\2026-07-03-17-19-25\weather-ai\app.py", line 172, in get_route_weather
+    route_info = rw.get_route(start_lat, start_lng, end_lat, end_lng, waypoints, mode)
+  File "C:\Users\ZiyuanLiu\WorkBuddy\2026-07-03-17-19-25\weather-ai\route_weather.py", line 58, in get_route
+    resp.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\ZiyuanLiu\WorkBuddy\2026-07-03-17-19-25\weather-ai\.venv\Lib\site-packages\requests\models.py", line 1024, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 400 Client Error: Bad Request for url: https://router.project-osrm.org/route/v1/driving/113.4024,23.0764;95.7042,62.4253?overview=full&geometries=geojson&annotations=true
+127.0.0.1 - - [03/Jul/2026 20:52:42] "POST /api/route-weather HTTP/1.1" 500 -
+127.0.0.1 - - [03/Jul/2026 20:53:08] "POST /api/route-weather HTTP/1.1" 200 -
+127.0.0.1 - - [03/Jul/2026 20:56:03] "POST /api/route-weather HTTP/1.1" 200 -
+ * Detected change in 'C:\\Users\\ZiyuanLiu\\WorkBuddy\\2026-07-03-17-19-25\\weather-ai\\app.py', reloading
+
+==================================================
+  天气AI预测平台
+  访问: http://127.0.0.1:5000
+  AI模式: 统计融合（未配置AI Key）
+  数据源: Open-Meteo, Open-Meteo GFS, Open-Meteo ECMWF, 7Timer!, wttr.in
+  免费源: 5 个
+  需Key源: 0 个
+==================================================
+
+[路线天气] 处理失败: 400 Client Error: Bad Request for url: https://router.project-osrm.org/route/v1/driving/113.4024,23.0764;95.7042,62.4253?overview=full&geometries=geojson&annotations=true
+ * Restarting with stat

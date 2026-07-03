@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI天气预测平台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <!-- Leaflet CSS & JS (for travel map) - local fallback to avoid CDN issues -->
+    <link rel="stylesheet" href="/static/lib/leaflet/leaflet.css" />
+    <script src="/static/lib/leaflet/leaflet.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- 动态背景 -->
+    <div class="bg-gradient"></div>
+    <div class="bg-particles" id="particles"></div>
+
+    <div class="container">
+        <!-- 顶部标题区 -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🌦️</span>
+                <div>
+                    <h1>AI天气预测平台</h1>
+                    <p class="subtitle">多源数据融合 · AI智能分析 · 精准天气预测</p>
+                </div>
+            </div>
+            <div class="source-badges" id="sourceBadges">
+                <!-- 动态生成数据源状态 -->
+            </div>
+        </header>
+
+        <!-- 标签页切换 -->
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="city-weather">
+                <span class="tab-icon">🏙️</span> 城市天气
+            </button>
+            <button class="tab-btn" data-tab="travel-plan">
+                <span class="tab-icon">🗺️</span> 旅行规划
+            </button>
+        </div>
+
+        <!-- ===== 标签页1：城市天气 ===== -->
+        <div class="tab-content" id="tab-city-weather">
+
+            <!-- 搜索区 -->
+            <div class="search-section">
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="cityInput" placeholder="搜索城市（如：北京、上海、Tokyo...）" autocomplete="off">
+                    <div class="search-results" id="searchResults"></div>
+                </div>
+            </div>
+
+            <!-- 加载状态 -->
+            <div class="loading" id="loading" style="display:none;">
+                <div class="loader"></div>
+                <p>正在从多个数据源获取天气信息...</p>
+            </div>
+
+            <!-- 无数据提示 -->
+            <div class="empty-state" id="emptyState">
+                <div class="empty-icon">🌍</div>
+                <h2>搜索城市开始查看天气</h2>
+                <p>整合 Open-Meteo、OpenWeatherMap、WeatherAPI、和风天气、Windy 等多平台数据</p>
+                <p>由 AI 大模型分析融合，给出更准确的预测</p>
+                <div class="quick-cities">
+                    <span>快速选择：</span>
+                    <button class="city-chip" data-city="北京" data-lat="39.9042" data-lon="116.4074">北京</button>
+                    <button class="city-chip" data-city="上海" data-lat="31.2304" data-lon="121.4737">上海</button>
+                    <button class="city-chip" data-city="广州" data-lat="23.1291" data-lon="113.2644">广州</button>
+                    <button class="city-chip" data-city="深圳" data-lat="22.5431" data-lon="114.0579">深圳</button>
+                    <button class="city-chip" data-city="成都" data-lat="30.5728" data-lon="104.0668">成都</button>
+                    <button class="city-chip" data-city="杭州" data-lat="30.2741" data-lon="120.1551">杭州</button>
+                </div>
+            </div>
+
+            <!-- 天气内容区 -->
+            <div class="weather-content" id="weatherContent" style="display:none;">
+
+                <!-- AI 融合预测主面板 -->
+                <section class="ai-prediction-panel">
+                    <div class="panel-header">
+                        <h2><span class="ai-badge">AI</span> 融合预测</h2>
+                        <span class="mode-badge" id="modeBadge">统计融合</span>
+                    </div>
+                    <div class="prediction-main">
+                        <div class="prediction-temp">
+                            <span class="temp-emoji" id="mainEmoji">🌤️</span>
+                            <div>
+                                <span class="temp-value" id="mainTemp">--</span>
+                                <span class="temp-unit">°C</span>
+                            </div>
+                        </div>
+                        <div class="prediction-info">
+                            <p class="weather-desc" id="mainWeather">--</p>
+                            <p class="feels-like">体感 <span id="feelsLike">--</span>°C</p>
+                            <p class="prediction-summary" id="aiSummary">--</p>
+                        </div>
+                    </div>
+                    <div class="prediction-metrics">
+                        <div class="metric">
+                            <span class="metric-icon">💧</span>
+                            <span class="metric-label">湿度</span>
+                            <span class="metric-value" id="mainHumidity">--%</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-icon">💨</span>
+                            <span class="metric-label">风速</span>
+                            <span class="metric-value" id="mainWind">-- m/s</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-icon">🧭</span>
+                            <span class="metric-label">风向</span>
+                            <span class="metric-value" id="mainWindDir">--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-icon">☔</span>
+                            <span class="metric-label">降水概率</span>
+                            <span class="metric-value" id="mainPrecip">--%</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-icon">📊</span>
+                            <span class="metric-label">数据源</span>
+                            <span class="metric-value" id="sourceCount">--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-icon">🎯</span>
+                            <span class="metric-label">置信度</span>
+                            <span class="metric-value" id="confidence">--</span>
+                        </div>
+                    </div>
+
+                    <!-- AI 分析文本 -->
+                    <div class="ai-analysis" id="aiAnalysisBox">
+                        <h3>📋 详细分析</h3>
+                        <div class="analysis-text" id="analysisText">--</div>
+                    </div>
+
+                    <!-- 生活建议 -->
+                    <div class="recommendations" id="recommendationsBox">
+                        <h3>💡 生活建议</h3>
+                        <div class="rec-list" id="recList"></div>
+                    </div>
+                </section>
+
+                <!-- 7天预报图表 -->
+                <section class="forecast-section">
+                    <h2>📈 未来7天趋势</h2>
+                    <div class="chart-container">
+                        <canvas id="forecastChart"></canvas>
+                    </div>
+                    <div class="forecast-cards" id="forecastCards"></div>
+                </section>
+
+                <!-- 多源数据对比 -->
+                <section class="sources-section">
+                    <h2>🔍 多源数据对比</h2>
+                    <p class="section-desc">同一时刻不同天气平台的原始数据，直观展示各源差异</p>
+                    <div class="sources-grid" id="sourcesGrid"></div>
+                </section>
+
+            </div>
+        </div>
+
+        <!-- ===== 标签页2：旅行规划 ===== -->
+        <div class="tab-content" id="tab-travel-plan" style="display:none;">
+
+            <!-- 旅行规划空状态 -->
+            <div class="travel-empty" id="travelEmpty">
+                <div class="empty-icon">🗺️</div>
+                <h2>规划你的旅行路线</h2>
+                <p>在地图上点击选择起点和终点，AI 将分析沿途天气变化</p>
+                <p class="travel-tip">💡 支持自驾、骑行、步行三种出行方式</p>
+            </div>
+
+            <!-- 旅行规划加载状态 -->
+            <div class="loading" id="travelLoading" style="display:none;">
+                <div class="loader"></div>
+                <p>正在规划路线并分析沿途天气...</p>
+            </div>
+
+            <!-- 地图容器（始终可见，便于选点） -->
+            <div class="map-section">
+                <div class="map-controls">
+                    <div class="map-input-group">
+                        <label>起点</label>
+                        <input type="text" id="startInput" placeholder="点击地图或输入地址..." autocomplete="off">
+                    </div>
+                    <div class="map-input-group">
+                        <label>终点</label>
+                        <input type="text" id="endInput" placeholder="点击地图或输入地址..." autocomplete="off">
+                    </div>
+                    <div class="map-input-group">
+                        <label>出行方式</label>
+                        <select id="travelMode">
+                            <option value="car">🚗 自驾</option>
+                            <option value="bike">🚴 骑行</option>
+                            <option value="foot">🚶 步行</option>
+                        </select>
+                        <button class="map-btn" id="addWaypointBtn">📍 添加途径点</button>
+                    </div>
+                    <div class="map-input-group">
+                        <label>出发时间</label>
+                        <input type="datetime-local" id="departureTime" value="">
+                    </div>
+                    <div class="map-input-group" id="waypointsList" style="display:none;">
+                        <label>途径点</label>
+                        <div id="waypointsContainer"></div>
+                    </div>
+                    <button class="map-btn" id="planRouteBtn">🗺️ 规划路线</button>
+                    <button class="map-btn secondary" id="clearRouteBtn">🗑️ 清除路线</button>
+                </div>
+                <div id="travelMap"></div>
+            </div>
+
+            <!-- 旅行规划内容（规划后显示） -->
+            <div class="travel-content" id="travelContent" style="display:none;">
+                <div class="route-info" id="routeInfo" style="display:none;">
+                    <div class="route-stats">
+                        <div class="route-stat">
+                            <span class="rs-icon">📏</span>
+                            <span class="rs-label">总距离</span>
+                            <span class="rs-value" id="routeDistance">--</span>
+                        </div>
+                        <div class="route-stat">
+                            <span class="rs-icon">⏱️</span>
+                            <span class="rs-label">预计时间</span>
+                            <span class="rs-value" id="routeDuration">--</span>
+                        </div>
+                        <div class="route-stat">
+                            <span class="rs-icon">📍</span>
+                            <span class="rs-label">天气采样点</span>
+                            <span class="rs-value" id="routeSampleCount">--</span>
+                        </div>
+                        <div class="route-stat">
+                            <span class="rs-icon">🌡️</span>
+                            <span class="rs-label">沿途温差</span>
+                            <span class="rs-value" id="routeTempSpread">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI 沿途天气分析 -->
+                <section class="ai-prediction-panel travel-analysis-panel" id="travelAnalysisPanel" style="display:none;">
+                    <div class="panel-header">
+                        <h2><span class="ai-badge">AI</span> 沿途天气分析</h2>
+                        <span class="mode-badge ai">🤖 AI路线分析</span>
+                    </div>
+                    <div class="travel-analysis-text" id="travelAnalysisText">
+                        <!-- AI分析文本 -->
+                    </div>
+                    <div class="travel-recommendations" id="travelRecs">
+                        <!-- 旅行建议 -->
+                    </div>
+                </section>
+
+                <!-- 沿途天气采样点卡片 -->
+                <section class="forecast-section" id="travelSamplesSection" style="display:none;">
+                    <h2>📍 沿途天气采样</h2>
+                    <p class="section-desc">路线沿途各采样点的实时天气，点击查看详情</p>
+                    <div class="travel-samples-grid" id="travelSamplesGrid">
+                        <!-- 采样点卡片 -->
+                    </div>
+                </section>
+
+                <!-- 沿途天气趋势图 -->
+                <section class="forecast-section" id="travelChartSection" style="display:none;">
+                    <h2>📈 沿途天气变化趋势</h2>
+                    <div class="chart-container">
+                        <canvas id="travelChart"></canvas>
+                    </div>
+                </section>
+
+            </div>
+        </div>
+
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

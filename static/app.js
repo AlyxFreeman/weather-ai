@@ -692,6 +692,10 @@ async function planRoute() {
         // 获取出发时间
         const departureTime = document.getElementById('departureTime').value;
 
+        // 获取采样间隔
+        const sampleIntervalRaw = document.getElementById('sampleInterval').value;
+        const sampleInterval = sampleIntervalRaw ? parseFloat(sampleIntervalRaw) : null;
+
         // 获取途径点
         const waypoints = routeWaypoints.map(wp => ({ lat: wp.lat, lng: wp.lng }));
 
@@ -707,6 +711,7 @@ async function planRoute() {
                 mode: mode,
                 departure_time: departureTime,
                 waypoints: waypoints,
+                sample_interval: sampleInterval,
             }),
         });
 

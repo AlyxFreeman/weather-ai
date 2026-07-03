@@ -163,17 +163,26 @@ def get_route_weather():
     mode = data.get("mode", "car")  # car / bike / foot
     departure_time = data.get("departure_time", "")  # 出发时间（ISO格式）
     waypoints = data.get("waypoints", [])  # 途径点列表[{"lat":..., "lng":...}, ...]
+    sample_interval = data.get("sample_interval")  # 采样间隔（km），None 表示自适应
 
     if not all(v is not None for v in [start_lat, start_lng, end_lat, end_lng]):
         return jsonify({"error": "缺少起点或终点坐标"}), 400
+
+    # 校验采样间隔范围
+    if sample_interval is not None:
+        try:
+            sample_interval = float(sample_interval)
+            sample_interval = max(50, min(500, sample_interval))  # 限制 50-500km
+        except (TypeError, ValueError):
+            sample_interval = None
 
     try:
         # 1. 获取路线（支持途径点）
         route_info = rw.get_route(start_lat, start_lng, end_lat, end_lng, waypoints, mode)
         route_info["mode"] = mode
 
-        # 2. 沿路线采样点
-        samples = rw.sample_route_points(route_info["geometry"])
+        # 2. 沿路线采样点（支持用户指定间隔）
+        samples = rw.sample_route_points(route_info["geometry"], interval_km=sample_interval)
 
         # 3. 并发查询各采样点天气（支持出发时间）
         samples_with_weather = rw.fetch_weather_along_route(samples, departure_time=departure_time)

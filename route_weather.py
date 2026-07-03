@@ -77,14 +77,22 @@ def get_route(start_lat, start_lng, end_lat, end_lng, waypoints=None, mode="car"
     }
 
 
-def sample_route_points(geometry, max_samples=12, min_interval_km=10):
+def sample_route_points(geometry, interval_km=None, max_samples=12, min_interval_km=10):
     """
     沿路线几何采样点。
 
     策略：
-    - 短路线（<100km）：至少 3 个采样点（起点、中点、终点）
-    - 中等路线（100-500km）：每 50km 一个采样点
-    - 长路线（>500km）：每 100km 一个采样点，最多 max_samples 个
+    - 用户指定 interval_km 时，按指定间隔均匀采样，不设数量上限
+    - 未指定时使用自适应策略：
+      - 短路线（<100km）：至少 3 个采样点（起点、中点、终点）
+      - 中等路线（100-500km）：每 50km 一个采样点
+      - 长路线（>500km）：每 100km 一个采样点，最多 max_samples 个
+
+    参数:
+        geometry: GeoJSON LineString
+        interval_km: 用户指定的采样间隔（公里），None 表示自适应
+        max_samples: 自适应模式下的最大采样点数
+        min_interval_km: 自适应模式下的最小间隔
 
     返回:
         [{"lat": ..., "lon": ..., "distance_m": ...}, ...]
@@ -107,26 +115,35 @@ def sample_route_points(geometry, max_samples=12, min_interval_km=10):
 
     total_km = total_dist / 1000
 
-    # 确定采样策略
-    if total_km < 50:
-        interval_m = total_dist / max(2, min(3, total_km / 10))
-    elif total_km < 200:
-        interval_m = 50 * 1000
-    elif total_km < 500:
-        interval_m = 80 * 1000
+    # 确定采样间隔
+    if interval_km and interval_km >= 10:
+        # 用户指定间隔模式：不设数量上限
+        interval_m = interval_km * 1000
+        use_user_interval = True
     else:
-        interval_m = min(120 * 1000, total_dist / max_samples)
+        # 自适应模式
+        use_user_interval = False
+        if total_km < 50:
+            interval_m = total_dist / max(2, min(3, total_km / 10))
+        elif total_km < 200:
+            interval_m = 50 * 1000
+        elif total_km < 500:
+            interval_m = 80 * 1000
+        else:
+            interval_m = min(120 * 1000, total_dist / max_samples)
 
     # 采样
     samples = []
     sampled_dist = set()
 
-    # 始终包含起点和终点
+    # 始终包含起点
     samples.append(_interpolate_point(coords, distances, 0))
     sampled_dist.add(0)
 
     current_dist = interval_m
-    while current_dist < total_dist and len(samples) < max_samples:
+    while current_dist < total_dist:
+        if not use_user_interval and len(samples) >= max_samples:
+            break
         pt = _interpolate_point(coords, distances, current_dist)
         rounded = round(current_dist / 1000) * 1000  # 避免重复
         if rounded not in sampled_dist:
@@ -143,44 +160,51 @@ def sample_route_points(geometry, max_samples=12, min_interval_km=10):
     for pt in samples:
         pt["distance_km"] = round(pt["distance_m"] / 1000, 1)
 
+    print(f"[采样] 路线全长 {total_km:.1f}km，采样间隔 {'%.0fkm' % (interval_m/1000) if use_user_interval else '自适应'}，共 {len(samples)} 个采样点")
     return samples
 
 
 def fetch_elevations(samples):
     """
     使用 Open-Meteo 高程 API 批量获取采样点海拔。
+    API 单次上限 100 个点，超过自动分批。
 
     返回: None（直接在 samples 中注入 elevation 字段）
     """
     if not samples:
         return
 
-    # Open-Meteo 批量上限 100 个点，我们的采样点最多 12 个，无需分批
-    lats = ",".join(f"{pt['lat']:.6f}" for pt in samples)
-    lons = ",".join(f"{pt['lon']:.6f}" for pt in samples)
+    BATCH_SIZE = 100
+    all_elevations = []
 
-    try:
-        resp = requests.get(
-            ELEVATION_API,
-            params={"latitude": lats, "longitude": lons},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        elevations = data.get("elevation", [])
+    for batch_start in range(0, len(samples), BATCH_SIZE):
+        batch = samples[batch_start:batch_start + BATCH_SIZE]
+        lats = ",".join(f"{pt['lat']:.6f}" for pt in batch)
+        lons = ",".join(f"{pt['lon']:.6f}" for pt in batch)
 
-        for i, pt in enumerate(samples):
-            if i < len(elevations) and elevations[i] is not None:
-                pt["elevation"] = int(round(elevations[i]))
-            else:
-                pt["elevation"] = None
+        try:
+            resp = requests.get(
+                ELEVATION_API,
+                params={"latitude": lats, "longitude": lons},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            elevations = data.get("elevation", [])
+            all_elevations.extend(elevations)
+            print(f"[高程] 批次 {batch_start//BATCH_SIZE + 1}：获取 {len(elevations)} 个点海拔")
+        except Exception as e:
+            print(f"[高程] 批次 {batch_start//BATCH_SIZE + 1} 获取失败: {e}")
+            all_elevations.extend([None] * len(batch))
 
-        print(f"[高程] 成功获取 {len(elevations)} 个点海拔")
-
-    except Exception as e:
-        print(f"[高程] 获取失败: {e}")
-        for pt in samples:
+    for i, pt in enumerate(samples):
+        if i < len(all_elevations) and all_elevations[i] is not None:
+            pt["elevation"] = int(round(all_elevations[i]))
+        else:
             pt["elevation"] = None
+
+    ok_count = sum(1 for pt in samples if pt.get("elevation") is not None)
+    print(f"[高程] 共获取 {ok_count}/{len(samples)} 个点海拔")
 
 
 def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
@@ -393,7 +417,10 @@ def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
     # 先批量获取所有采样点海拔（一次请求，不阻塞天气查询）
     fetch_elevations(samples)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    # 根据采样点数量动态调整并发数，每个采样点需要请求 5 个数据源
+    num_workers = min(len(samples) * 2, 16) if len(samples) > 6 else 6
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = {executor.submit(fetch_one, pt): pt for pt in samples}
         results = []
         for future in concurrent.futures.as_completed(futures):

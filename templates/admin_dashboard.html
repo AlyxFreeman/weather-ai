@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>后台管理 - 访问统计</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+            background: #f5f6f8;
+            color: #1f2937;
+            min-height: 100vh;
+        }
+        .admin-header {
+            background: #fff;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .admin-header h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .admin-header a {
+            color: #6b7280;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .admin-header a:hover { color: #2563eb; }
+        .admin-header .nav { display: flex; gap: 20px; align-items: center; }
+        .admin-container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+        .stat-card {
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 24px;
+        }
+        .stat-card .label {
+            font-size: 13px;
+            color: #6b7280;
+            margin-bottom: 8px;
+        }
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+        .section {
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            margin-bottom: 24px;
+            overflow: hidden;
+        }
+        .section-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 15px;
+            font-weight: 600;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            text-align: left;
+            padding: 10px 24px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: #f9fafb;
+        }
+        td {
+            padding: 12px 24px;
+            font-size: 14px;
+            border-top: 1px solid #f3f4f6;
+        }
+        td.ip { font-family: "SF Mono", Consolas, monospace; font-weight: 500; }
+        td.count { font-weight: 600; }
+        td.time { color: #6b7280; font-size: 13px; }
+        td.path { font-family: "SF Mono", Consolas, monospace; font-size: 13px; }
+        td.ua {
+            color: #9ca3af;
+            font-size: 12px;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .empty { padding: 40px; text-align: center; color: #9ca3af; font-size: 14px; }
+        @media (max-width: 768px) {
+            .stats-row { grid-template-columns: 1fr; }
+            .admin-container { padding: 16px; }
+            td.ua { display: none; }
+            th:nth-child(4) { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-header">
+        <h1>访问统计后台</h1>
+        <div class="nav">
+            <a href="/">首页</a>
+            <a href="/admin/logout">退出</a>
+        </div>
+    </div>
+
+    <div class="admin-container">
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="label">总访问量</div>
+                <div class="value">{{ total_visits }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">独立 IP 数</div>
+                <div class="value">{{ unique_ips }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">今日访问</div>
+                <div class="value">{{ today_visits }}</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-header">IP 访问统计（按次数排序）</div>
+            {% if ip_stats %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>IP 地址</th>
+                        <th>访问次数</th>
+                        <th>首次访问</th>
+                        <th>最近访问</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in ip_stats %}
+                    <tr>
+                        <td class="ip">{{ row[0] }}</td>
+                        <td class="count">{{ row[1] }}</td>
+                        <td class="time">{{ row[2] }}</td>
+                        <td class="time">{{ row[3] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">暂无访问记录</div>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-header">路径访问统计</div>
+            {% if path_stats %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>路径</th>
+                        <th>访问次数</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in path_stats %}
+                    <tr>
+                        <td class="path">{{ row[0] }}</td>
+                        <td class="count">{{ row[1] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">暂无数据</div>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-header">最近 50 条访问记录</div>
+            {% if recent_visits %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>IP 地址</th>
+                        <th>路径</th>
+                        <th>时间</th>
+                        <th>User-Agent</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in recent_visits %}
+                    <tr>
+                        <td class="ip">{{ row[0] }}</td>
+                        <td class="path">{{ row[1] }}</td>
+                        <td class="time">{{ row[3] }}</td>
+                        <td class="ua">{{ row[2] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty">暂无访问记录</div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

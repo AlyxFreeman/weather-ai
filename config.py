@@ -6,6 +6,8 @@ Open-Meteo 无需 Key，开箱即用。
 其余数据源请填入你自己的 Key（留空则自动跳过该源）。
 """
 
+import os
+
 # ============ 天气数据源 API Keys ============
 
 # --- 免费免Key数据源（开箱即用，多源融合） ---
@@ -50,13 +52,20 @@ WINDY_API_KEY = ""  # 填入你的 Key
 
 # 使用 OpenAI 兼容接口（支持 OpenAI / DeepSeek / 通义千问等）
 # 留空则回退到统计融合模式（不需要任何 AI 服务）
-AI_API_KEY = ""        # AI 服务的 API Key
-AI_BASE_URL = ""       # 如 "https://api.deepseek.com/v1" 或 "https://api.openai.com/v1"
-AI_MODEL = ""          # 如 "deepseek-chat" 或 "gpt-4o-mini"
+AI_API_KEY = os.environ.get("AI_API_KEY", "sk-f6d47897744048ad8bc5f4d6fd429715")  # DeepSeek API Key
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://api.deepseek.com/v1")  # DeepSeek 接口地址
+AI_MODEL = os.environ.get("AI_MODEL", "deepseek-chat")  # DeepSeek 模型
+
+# ============ 高德地图配置 ============
+
+# 高德开放平台注册: https://lbs.amap.com/
+# 1. 创建「Web端(JS API)」应用 → 获取 JS API Key 和安全密钥
+# 2. 创建「Web服务」应用 → 获取 Web 服务 Key
+AMAP_JS_KEY = os.environ.get("AMAP_JS_KEY", "c866ea6b48195fef40b60c0df53b321b")        # JS API Key（前端地图用）
+AMAP_SECURITY_CODE = os.environ.get("AMAP_SECURITY_CODE", "af40c61a9d2221624e6bbe75087c8cf6")  # JS API 安全密钥
+AMAP_WEB_KEY = os.environ.get("AMAP_WEB_KEY", "72ffc2b363aedc2c480f1cc5a5372b55")      # Web 服务 Key（后端路径规划/地理编码用）
 
 # ============ 应用配置 ============
-
-import os
 
 # 云端部署时通过环境变量指定端口和主机
 FLASK_HOST = os.environ.get("FLASK_HOST", "0.0.0.0")
@@ -65,3 +74,8 @@ FLASK_DEBUG = os.environ.get("FLASK_DEBUG", "False") == "True"
 
 # 请求超时（秒）
 REQUEST_TIMEOUT = 10
+
+# ============ 后台管理配置 ============
+
+# 访问后台的密码（只有你知道）
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "weather2026")

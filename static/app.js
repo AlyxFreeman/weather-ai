@@ -1,12 +1,12 @@
 /* ===== AI天气预测平台 - 前端逻辑 ===== */
-/* global L */
+/* global AMap, Chart */
 
 // 全局状态
 let forecastChart = null;
 let travelChart = null;
 let searchTimer = null;
 let travelMap = null;
-let routeControl = null;
+let routePolyline = null;     // 路线折线
 let routePoints = [];       // 路线坐标点 [{lat, lng}, ...]
 let routeWeatherData = [];  // 沿途天气数据
 let routeWaypoints = [];    // 途径点 [{lat, lng, marker}, ...]
@@ -15,31 +15,16 @@ let endMarker = null;       // 终点标记
 let selectingPoint = 'start'; // 当前选择：start / end
 let addingWaypoint = false; // 是否正在添加途径点
 let travelMapInitialized = false;  // 地图是否已初始化
+let mapOverlays = [];       // 地图上所有叠加物（标记、折线），用于清除
+let mapInfoWindow = null;   // 信息窗体
 
 // ===== 初始化 =====
 document.addEventListener('DOMContentLoaded', () => {
-    createParticles();
     loadSourceStatus();
     bindEvents();
     // 地图延迟到用户切换到旅行规划标签页时再初始化
-    // 原因：hidden 容器里 Leaflet 无法正确计算尺寸
+    // 原因：hidden 容器里地图无法正确计算尺寸
 });
-
-// ===== 背景粒子 =====
-function createParticles() {
-    const container = document.getElementById('particles');
-    for (let i = 0; i < 15; i++) {
-        const p = document.createElement('div');
-        p.className = 'particle';
-        p.style.width = Math.random() * 6 + 4 + 'px';
-        p.style.height = p.style.width;
-        p.style.left = Math.random() * 100 + '%';
-        p.style.top = Math.random() * 100 + '%';
-        p.style.animationDelay = Math.random() * 20 + 's';
-        p.style.animationDuration = (Math.random() * 10 + 15) + 's';
-        container.appendChild(p);
-    }
-}
 
 // ===== 加载数据源状态 =====
 async function loadSourceStatus() {
@@ -51,7 +36,7 @@ async function loadSourceStatus() {
             const isActive = s.status === 'active';
             const title = s.desc ? ` title="${s.name} (${s.desc})"` : '';
             return `<span class="source-badge ${isActive ? 'active' : 'inactive'}"${title}>
-                ${isActive ? '✅' : '⚪'} ${s.name}
+                ${s.name}
             </span>`;
         }).join('');
     } catch (e) {
@@ -124,6 +109,14 @@ function bindEvents() {
     if (addWpBtn) {
         addWpBtn.addEventListener('click', () => addWaypoint());
     }
+
+    // 阻止地图控制面板的滚轮事件冒泡到地图
+    const mapControls = document.querySelector('.map-controls');
+    if (mapControls) {
+        mapControls.addEventListener('wheel', (e) => {
+            e.stopPropagation();
+        });
+    }
 }
 
 // ===== 标签页切换 =====
@@ -138,10 +131,8 @@ function switchTab(tabName) {
     tabEl.style.display = 'block';
 
     // 如果是旅行规划标签，初始化地图
-    // 关键：必须等浏览器完成 reflow 后容器才有尺寸
     if (tabName === 'travel-plan') {
         if (!travelMapInitialized) {
-            // 等两帧，确保浏览器已完成布局计算
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
                     const mapEl = document.getElementById('travelMap');
@@ -154,8 +145,6 @@ function switchTab(tabName) {
                     travelMapInitialized = true;
                 });
             });
-        } else if (travelMap) {
-            travelMap.invalidateSize();
         }
     }
 }
@@ -513,7 +502,7 @@ function getWeatherEmoji(text) {
 // ===== 旅行规划功能 =====
 // ============================================================
 
-// ===== 初始化旅行地图 =====
+// ===== 初始化旅行地图（高德地图） =====
 function initTravelMap() {
     const mapEl = document.getElementById('travelMap');
     if (!mapEl) {
@@ -521,7 +510,6 @@ function initTravelMap() {
         return;
     }
 
-    // 检查容器是否有尺寸（必须在可见容器中初始化）
     const rect = mapEl.getBoundingClientRect();
     if (rect.height === 0 || rect.width === 0) {
         console.warn(`地图容器尺寸为0 (${rect.width}x${rect.height})，延迟重试...`);
@@ -529,46 +517,40 @@ function initTravelMap() {
         return;
     }
 
-    if (typeof L === 'undefined') {
-        console.error('Leaflet 库未加载');
-        mapEl.innerHTML = '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#e53935;font-size:14px;">地图库加载失败，请刷新页面</div>';
+    if (typeof AMap === 'undefined') {
+        console.error('高德地图 JS API 未加载，请检查 AMAP_JS_KEY 是否已配置');
+        mapEl.innerHTML = '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#e53935;font-size:14px;padding:20px;text-align:center;">高德地图未加载<br>请在 config.py 中配置 AMAP_JS_KEY<br>注册地址: lbs.amap.com</div>';
         return;
     }
 
-    // 如果已初始化，跳过
     if (travelMap) {
-        travelMap.invalidateSize();
         return;
     }
 
     try {
-        console.log(`开始初始化地图，容器尺寸: ${rect.width}x${rect.height}`);
-        travelMap = L.map('travelMap', {
-            center: [35.86, 104.2],
+        console.log(`开始初始化高德地图，容器尺寸: ${rect.width}x${rect.height}`);
+        travelMap = new AMap.Map('travelMap', {
+            center: [104.2, 35.86],   // 高德使用 [lng, lat]
             zoom: 5,
-            zoomControl: true,
+            viewMode: '2D',
         });
 
-        // OpenStreetMap 瓦片图层（免费）
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-            maxZoom: 18,
-        }).addTo(travelMap);
-
-        console.log('地图瓦片图层已添加');
+        console.log('高德地图初始化完成');
 
         // 点击地图选点
         travelMap.on('click', (e) => {
-            handleMapClick(e.latlng);
+            const lng = e.lnglat.getLng();
+            const lat = e.lnglat.getLat();
+            handleMapClick(lat, lng);
         });
 
-        // 立即触发布局重算
-        setTimeout(() => {
-            travelMap.invalidateSize();
-            console.log('地图初始化完成');
-        }, 100);
+        // 创建信息窗体（复用）
+        mapInfoWindow = new AMap.InfoWindow({
+            offset: new AMap.Pixel(0, -30),
+            closeWhenClickMap: true,
+        });
     } catch (err) {
-        console.error('地图初始化失败:', err);
+        console.error('高德地图初始化失败:', err);
         mapEl.innerHTML = `<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#e53935;font-size:14px;padding:20px;text-align:center;">地图初始化失败: ${err.message}</div>`;
     }
 }
@@ -576,10 +558,8 @@ function initTravelMap() {
 // 起点/终点标记
 // 已在全局状态区声明：startMarker, endMarker, selectingPoint, addingWaypoint
 
-function handleMapClick(latlng) {
-    const { lat, lng } = latlng;
-
-    // 如果正在添加途径点，先处理
+function handleMapClick(lat, lng) {
+    // 如果正在添加途径点，优先处理
     if (addingWaypoint) {
         handleWaypointClick(lat, lng);
         return;
@@ -587,40 +567,38 @@ function handleMapClick(latlng) {
 
     if (selectingPoint === 'start') {
         // 设置起点
-        if (startMarker) travelMap.removeLayer(startMarker);
-        startMarker = L.marker([lat, lng], {
+        if (startMarker) travelMap.remove(startMarker);
+        startMarker = new AMap.Marker({
+            position: [lng, lat],
+            content: '<div style="font-size:22px;cursor:pointer;">🟢</div>',
+            offset: new AMap.Pixel(-11, -11),
             draggable: true,
-            title: '起点',
-            icon: L.divIcon({
-                className: 'route-marker start-marker',
-                html: '🟢',
-                iconSize: [28, 28],
-                iconAnchor: [14, 14],
-            }),
-        }).addTo(travelMap);
-        startMarker.on('dragend', (e) => {
-            const pos = e.target.getLatLng();
-            document.getElementById('startInput').value = `${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)}`;
+        });
+        travelMap.add(startMarker);
+        mapOverlays.push(startMarker);
+        startMarker.on('dragging', (e) => {
+            const pLng = e.lnglat.getLng();
+            const pLat = e.lnglat.getLat();
+            document.getElementById('startInput').value = `${pLat.toFixed(4)}, ${pLng.toFixed(4)}`;
         });
         document.getElementById('startInput').value = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
         selectingPoint = 'end';
         showMapHint('✅ 起点已选择，请在地图上点击选择终点');
     } else {
         // 设置终点
-        if (endMarker) travelMap.removeLayer(endMarker);
-        endMarker = L.marker([lat, lng], {
+        if (endMarker) travelMap.remove(endMarker);
+        endMarker = new AMap.Marker({
+            position: [lng, lat],
+            content: '<div style="font-size:22px;cursor:pointer;">🔴</div>',
+            offset: new AMap.Pixel(-11, -11),
             draggable: true,
-            title: '终点',
-            icon: L.divIcon({
-                className: 'route-marker end-marker',
-                html: '🔴',
-                iconSize: [28, 28],
-                iconAnchor: [14, 14],
-            }),
-        }).addTo(travelMap);
-        endMarker.on('dragend', (e) => {
-            const pos = e.target.getLatLng();
-            document.getElementById('endInput').value = `${pos.lat.toFixed(4)}, ${pos.lng.toFixed(4)}`;
+        });
+        travelMap.add(endMarker);
+        mapOverlays.push(endMarker);
+        endMarker.on('dragging', (e) => {
+            const pLng = e.lnglat.getLng();
+            const pLat = e.lnglat.getLat();
+            document.getElementById('endInput').value = `${pLat.toFixed(4)}, ${pLng.toFixed(4)}`;
         });
         document.getElementById('endInput').value = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
         selectingPoint = 'start';
@@ -740,73 +718,100 @@ async function planRoute() {
     }
 }
 
-// ===== 地理编码（地址 → 坐标）=====
-async function geocode(query) {
-    try {
-        const resp = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`);
-        const data = await resp.json();
-        if (data && data.length > 0) {
-            return {
-                lat: parseFloat(data[0].lat),
-                lon: parseFloat(data[0].lon),
-                name: data[0].display_name,
-            };
+// ===== 地理编码（地址 → 坐标，使用高德 Geocoder）=====
+function geocode(query) {
+    return new Promise((resolve) => {
+        if (typeof AMap === 'undefined') {
+            console.error('高德地图未加载，无法进行地理编码');
+            resolve(null);
+            return;
         }
-    } catch (e) {
-        console.error('地理编码失败:', e);
-    }
-    return null;
+
+        try {
+            const geocoder = new AMap.Geocoder({ city: '全国' });
+            geocoder.getLocation(query, (status, result) => {
+                if (status === 'complete' && result.geocodes && result.geocodes.length > 0) {
+                    const loc = result.geocodes[0].location;
+                    resolve({
+                        lat: loc.getLat(),
+                        lon: loc.getLng(),
+                        name: result.geocodes[0].formattedAddress,
+                    });
+                } else {
+                    console.warn('高德地理编码未找到结果:', status);
+                    resolve(null);
+                }
+            });
+        } catch (e) {
+            console.error('地理编码失败:', e);
+            resolve(null);
+        }
+    });
 }
 
-// ===== 在地图上绘制路线 =====
+// ===== 在地图上绘制路线（高德地图） =====
 function drawRouteOnMap(geometry, samplePoints) {
     // 清除旧路线
-    if (routeControl) {
-        travelMap.removeControl(routeControl);
-        routeControl = null;
+    if (routePolyline) {
+        travelMap.remove(routePolyline);
+        routePolyline = null;
     }
+    // 清除旧采样点标记
+    mapOverlays.forEach(o => {
+        if (o !== startMarker && o !== endMarker && !(routeWaypoints.find(w => w.marker === o))) {
+            travelMap.remove(o);
+        }
+    });
+    mapOverlays = mapOverlays.filter(o => o === startMarker || o === endMarker || routeWaypoints.find(w => w.marker === o));
 
-    // 绘制路线（使用 Leaflet Routing Machine 或直接绘制 Polyline）
+    // 绘制路线
     if (geometry && geometry.coordinates) {
-        // OSRM 返回的是 GeoJSON LineString
-        const coords = geometry.coordinates.map(c => [c[1], c[0]]);  // 转 [lat, lng]
-        const polyline = L.polyline(coords, {
-            color: '#4f7cfe',
-            weight: 5,
-            opacity: 0.8,
-        }).addTo(travelMap);
+        // 高德路线坐标已是 [lng, lat] 格式，直接使用
+        const path = geometry.coordinates.map(c => [c[0], c[1]]);
+        routePolyline = new AMap.Polyline({
+            path: path,
+            strokeColor: '#4f7cfe',
+            strokeWeight: 5,
+            strokeOpacity: 0.9,
+            lineJoin: 'round',
+            lineCap: 'round',
+        });
+        travelMap.add(routePolyline);
+        mapOverlays.push(routePolyline);
 
         // 调整地图视野
-        travelMap.fitBounds(polyline.getBounds(), { padding: [50, 50] });
+        travelMap.setFitView([routePolyline]);
 
-        // 保存路线点
-        routePoints = coords;
+        routePoints = path;
     }
 
     // 绘制采样点
     if (samplePoints && samplePoints.length > 0) {
         samplePoints.forEach((pt, idx) => {
-            const marker = L.marker([pt.lat, pt.lon], {
-                icon: L.divIcon({
-                    className: 'sample-marker',
-                    html: `<div style="background:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:2px solid #4f7cfe;font-size:11px;font-weight:600;color:#4f7cfe;">${idx + 1}</div>`,
-                    iconSize: [28, 28],
-                    iconAnchor: [14, 14],
-                }),
-            }).addTo(travelMap);
+            const marker = new AMap.Marker({
+                position: [pt.lon, pt.lat],  // AMap: [lng, lat]
+                content: `<div style="background:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:2px solid #4f7cfe;font-size:11px;font-weight:600;color:#4f7cfe;box-shadow:0 2px 6px rgba(0,0,0,0.2);">${idx + 1}</div>`,
+                offset: new AMap.Pixel(-14, -14),
+            });
+            travelMap.add(marker);
+            mapOverlays.push(marker);
 
-            // 弹出天气信息
+            // 点击弹出天气信息
             if (pt.weather) {
                 const w = pt.weather;
                 const elevStr = pt.elevation != null ? ` | ⛰️${pt.elevation}m` : '';
-                marker.bindPopup(`
+                const popupHtml = `
                     <div class="weather-popup">
                         <div class="wp-emoji">${getWeatherEmoji(w.weather_text)}</div>
                         <div class="wp-temp">${w.temperature}°C</div>
                         <div class="wp-weather">${w.weather_text}</div>
                         <div class="wp-details">💧${w.humidity}% | 💨${w.wind_speed}m/s${elevStr}</div>
                     </div>
-                `);
+                `;
+                marker.on('click', () => {
+                    mapInfoWindow.setContent(popupHtml);
+                    mapInfoWindow.open(travelMap, marker.getPosition());
+                });
             }
         });
     }
@@ -1029,31 +1034,28 @@ function addWaypoint() {
 function handleWaypointClick(lat, lng) {
     if (!addingWaypoint) return;
 
-    // 添加途径点
-    routeWaypoints.push({ lat: lat, lng: lng, marker: null });
-
-    // 在地图上标记途径点
-    const marker = L.marker([lat, lng], {
+    // 添加途径点（高德 Marker）
+    const marker = new AMap.Marker({
+        position: [lng, lat],
+        content: '<div style="font-size:22px;cursor:pointer;">🟡</div>',
+        offset: new AMap.Pixel(-11, -11),
         draggable: true,
-        icon: L.divIcon({
-            className: 'route-marker waypoint-marker',
-            html: `🟡`,
-            iconSize: [28, 28],
-            iconAnchor: [14, 14],
-        }),
-    }).addTo(travelMap);
+    });
+    travelMap.add(marker);
+    mapOverlays.push(marker);
+
+    routeWaypoints.push({ lat: lat, lng: lng, marker: marker });
 
     // 双击删除途径点
     marker.on('dblclick', () => {
         const idx = routeWaypoints.findIndex(wp => wp.marker === marker);
         if (idx >= 0) {
-            travelMap.removeLayer(marker);
+            travelMap.remove(marker);
+            mapOverlays = mapOverlays.filter(o => o !== marker);
             routeWaypoints.splice(idx, 1);
             updateWaypointsList();
         }
     });
-
-    routeWaypoints[routeWaypoints.length - 1].marker = marker;
 
     // 更新途径点列表
     updateWaypointsList();
@@ -1085,33 +1087,25 @@ function updateWaypointsList() {
 
 window.removeWaypoint = function(idx) {
     if (routeWaypoints[idx] && routeWaypoints[idx].marker) {
-        travelMap.removeLayer(routeWaypoints[idx].marker);
+        travelMap.remove(routeWaypoints[idx].marker);
+        mapOverlays = mapOverlays.filter(o => o !== routeWaypoints[idx].marker);
     }
     routeWaypoints.splice(idx, 1);
     updateWaypointsList();
 };
 
-// 修改 handleMapClick 函数，支持途径点选择
-const originalHandleMapClick = handleMapClick;
-handleMapClick = function(latLng) {
-    if (addingWaypoint) {
-        handleWaypointClick(latLng.lat, latLng.lng);
-        return;
-    }
-    if (originalHandleMapClick) originalHandleMapClick(latLng);
-};
-
 // ===== 清除路线 =====
 function clearRoute() {
-    // 清除地图上所有图层（保留瓦片）
-    travelMap.eachLayer(layer => {
-        if (layer instanceof L.Marker || layer instanceof L.Polyline) {
-            travelMap.removeLayer(layer);
-        }
-    });
-
+    // 清除地图上所有叠加物
+    mapOverlays.forEach(o => travelMap.remove(o));
+    if (routePolyline) {
+        travelMap.remove(routePolyline);
+        routePolyline = null;
+    }
+    mapOverlays = [];
     startMarker = null;
     endMarker = null;
+    routeWaypoints = [];
     routePoints = [];
     routeWeatherData = [];
 
@@ -1119,7 +1113,9 @@ function clearRoute() {
     document.getElementById('endInput').value = '';
     document.getElementById('travelContent').style.display = 'none';
     document.getElementById('travelEmpty').style.display = 'block';
+    document.getElementById('waypointsList').style.display = 'none';
 
     // 重置地图视图
-    travelMap.setView([35.86, 104.2], 5);
+    travelMap.setCenter([104.2, 35.86]);
+    travelMap.setZoom(5);
 }

@@ -74,13 +74,14 @@ def _empty_result(source_name, error_msg):
     }
 
 
-def _ok_result(source_name, current, forecast):
+def _ok_result(source_name, current, forecast, hourly=None):
     """生成正常结果"""
     return {
         "source": source_name,
         "status": "ok",
         "current": current,
         "forecast": forecast,
+        "hourly": hourly,
     }
 
 
@@ -140,6 +141,11 @@ def _fetch_open_meteo_model(lat, lon, model=None, source_name="Open-Meteo"):
                 "weather_code", "temperature_2m_max", "temperature_2m_min",
                 "precipitation_sum", "wind_speed_10m_max", "precipitation_probability_max",
             ],
+            "hourly": [
+                "temperature_2m", "relative_humidity_2m", "apparent_temperature",
+                "weather_code", "wind_speed_10m", "wind_direction_10m",
+                "precipitation", "precipitation_probability",
+            ],
             "timezone": "auto",
             "forecast_days": 7,
         }
@@ -197,7 +203,27 @@ def _fetch_open_meteo_model(lat, lon, model=None, source_name="Open-Meteo"):
                 "wind_speed": round(daily["wind_speed_10m_max"][i], 1),
             })
 
-        return _ok_result(source_name, current, forecast)
+        # 解析逐小时数据（用于路线天气按到达时刻取风速）
+        hourly_data = data.get("hourly", {})
+        hourly_list = []
+        if hourly_data and "time" in hourly_data:
+            for i in range(len(hourly_data["time"])):
+                h_code = hourly_data["weather_code"][i] if "weather_code" in hourly_data else 0
+                h_text, h_emoji = _wmo_to_text(h_code)
+                hourly_list.append({
+                    "time": hourly_data["time"][i],
+                    "temperature": round(hourly_data["temperature_2m"][i], 1) if "temperature_2m" in hourly_data else None,
+                    "feels_like": round(hourly_data["apparent_temperature"][i], 1) if "apparent_temperature" in hourly_data else None,
+                    "humidity": hourly_data["relative_humidity_2m"][i] if "relative_humidity_2m" in hourly_data else None,
+                    "wind_speed": round(hourly_data["wind_speed_10m"][i], 1) if "wind_speed_10m" in hourly_data else None,
+                    "wind_direction_deg": hourly_data["wind_direction_10m"][i] if "wind_direction_10m" in hourly_data else 0,
+                    "weather_text": h_text,
+                    "weather_emoji": h_emoji,
+                    "precipitation": round(hourly_data["precipitation"][i], 2) if "precipitation" in hourly_data else 0,
+                    "precipitation_prob": hourly_data["precipitation_probability"][i] if "precipitation_probability" in hourly_data else 0,
+                })
+
+        return _ok_result(source_name, current, forecast, hourly=hourly_list if hourly_list else None)
 
     except Exception as e:
         return _empty_result(source_name, str(e))

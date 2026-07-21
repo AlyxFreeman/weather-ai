@@ -7,10 +7,14 @@ API 端点:
   GET  /api/sources              — 查看已配置的数据源状态
 """
 
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
 import config
 import weather_sources
 import ai_fusion
+import sqlite3
+import os
+from datetime import datetime
+from functools import wraps
 
 # 旅行路线天气模块
 try:
@@ -21,14 +25,92 @@ except Exception as e:
     ROUTE_WEATHER_AVAILABLE = False
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "weather-ai-secret-2026")
 
 # 确保 JSON 正确编码 Unicode（支持中文等特殊字符）
 app.config['JSON_AS_ASCII'] = False
 
+# ===== IP 访问记录 SQLite =====
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "visitors.db")
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip TEXT NOT NULL,
+            path TEXT NOT NULL,
+            user_agent TEXT,
+            visited_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS visit_summary (
+            ip TEXT PRIMARY KEY,
+            visit_count INTEGER DEFAULT 0,
+            first_visit TEXT,
+            last_visit TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_client_ip():
+    # 获取真实 IP（支持反向代理）
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    if request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP').strip()
+    return request.remote_addr or "unknown"
+
+def record_visit():
+    """记录一次访问"""
+    ip = get_client_ip()
+    path = request.path
+    ua = request.headers.get('User-Agent', '')[:500]
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        # 记录明细
+        c.execute("INSERT INTO visits (ip, path, user_agent, visited_at) VALUES (?, ?, ?, ?)",
+                  (ip, path, ua, now))
+        # 更新汇总
+        c.execute("""
+            INSERT INTO visit_summary (ip, visit_count, first_visit, last_visit)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(ip) DO UPDATE SET
+                visit_count = visit_count + 1,
+                last_visit = ?
+        """, (ip, now, now, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[访问记录] 写入失败: {e}")
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated
+
+init_db()
+
+# ===== 请求钩子：记录所有访问 =====
+@app.before_request
+def before_request():
+    # 不记录静态资源
+    if not request.path.startswith('/static/'):
+        record_visit()
+
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", amap_key=config.AMAP_JS_KEY, amap_security=config.AMAP_SECURITY_CODE)
 
 
 @app.route("/api/search")
@@ -73,7 +155,7 @@ def get_weather():
 def get_sources_status():
     """查看已配置的数据源状态"""
     sources = [
-        # 免费免Key数据源
+        # 免费免Key数据源（仅展示实际启用的源）
         {
             "name": "Open-Meteo",
             "enabled": config.OPEN_METEO_ENABLED,
@@ -96,47 +178,11 @@ def get_sources_status():
             "desc": "欧洲中期预报模型",
         },
         {
-            "name": "7Timer!",
-            "enabled": config.SEVENTIMER_ENABLED,
-            "needs_key": False,
-            "status": "active" if config.SEVENTIMER_ENABLED else "disabled",
-            "desc": "GFS/CMC独立服务",
-        },
-        {
             "name": "wttr.in",
             "enabled": config.WTTR_ENABLED,
             "needs_key": False,
             "status": "active" if config.WTTR_ENABLED else "disabled",
             "desc": "WorldWeatherOnline",
-        },
-        # 需Key数据源
-        {
-            "name": "OpenWeatherMap",
-            "enabled": bool(config.OPENWEATHER_API_KEY),
-            "needs_key": True,
-            "status": "active" if config.OPENWEATHER_API_KEY else "needs_key",
-            "desc": "需Key",
-        },
-        {
-            "name": "WeatherAPI",
-            "enabled": bool(config.WEATHERAPI_KEY),
-            "needs_key": True,
-            "status": "active" if config.WEATHERAPI_KEY else "needs_key",
-            "desc": "需Key",
-        },
-        {
-            "name": "和风天气",
-            "enabled": bool(config.QWEATHER_API_KEY),
-            "needs_key": True,
-            "status": "active" if config.QWEATHER_API_KEY else "needs_key",
-            "desc": "需Key",
-        },
-        {
-            "name": "Windy",
-            "enabled": bool(config.WINDY_API_KEY),
-            "needs_key": True,
-            "status": "active" if config.WINDY_API_KEY else "needs_key",
-            "desc": "需Key",
         },
     ]
 
@@ -147,6 +193,88 @@ def get_sources_status():
         "ai_mode": "AI大模型" if ai_status == "active" else "统计融合",
         "ai_status": ai_status,
     })
+
+
+# ===== 后台管理系统 =====
+@app.route("/admin/login")
+def admin_login():
+    if session.get('admin_logged_in'):
+        return redirect(url_for('admin_dashboard'))
+    return render_template("admin_login.html")
+
+
+@app.route("/admin/login", methods=["POST"])
+def admin_login_post():
+    password = request.form.get("password", "")
+    if password == config.ADMIN_PASSWORD:
+        session['admin_logged_in'] = True
+        return redirect(url_for('admin_dashboard'))
+    return render_template("admin_login.html", error="密码错误")
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('admin_login'))
+
+
+@app.route("/admin")
+@admin_required
+def admin_dashboard():
+    """后台管理面板：展示访问统计"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # 总访问量
+    c.execute("SELECT COUNT(*) FROM visits")
+    total_visits = c.fetchone()[0]
+
+    # 独立IP数
+    c.execute("SELECT COUNT(*) FROM visit_summary")
+    unique_ips = c.fetchone()[0]
+
+    # 今日访问量
+    today = datetime.now().strftime('%Y-%m-%d')
+    c.execute("SELECT COUNT(*) FROM visits WHERE visited_at LIKE ?", (f"{today}%",))
+    today_visits = c.fetchone()[0]
+
+    # 各IP访问统计（按访问次数降序）
+    c.execute("""
+        SELECT ip, visit_count, first_visit, last_visit
+        FROM visit_summary
+        ORDER BY visit_count DESC
+        LIMIT 100
+    """)
+    ip_stats = c.fetchall()
+
+    # 最近50条访问记录
+    c.execute("""
+        SELECT ip, path, user_agent, visited_at
+        FROM visits
+        ORDER BY id DESC
+        LIMIT 50
+    """)
+    recent_visits = c.fetchall()
+
+    # 各路径访问统计
+    c.execute("""
+        SELECT path, COUNT(*) as cnt
+        FROM visits
+        GROUP BY path
+        ORDER BY cnt DESC
+        LIMIT 20
+    """)
+    path_stats = c.fetchall()
+
+    conn.close()
+
+    return render_template("admin_dashboard.html",
+                           total_visits=total_visits,
+                           unique_ips=unique_ips,
+                           today_visits=today_visits,
+                           ip_stats=ip_stats,
+                           recent_visits=recent_visits,
+                           path_stats=path_stats)
 
 
 @app.route("/api/route-weather", methods=["POST"])
@@ -223,15 +351,10 @@ if __name__ == "__main__":
     if config.OPEN_METEO_ENABLED: active.append("Open-Meteo")
     if config.OPEN_METEO_GFS_ENABLED: active.append("Open-Meteo GFS")
     if config.OPEN_METEO_ECMWF_ENABLED: active.append("Open-Meteo ECMWF")
-    if config.SEVENTIMER_ENABLED: active.append("7Timer!")
     if config.WTTR_ENABLED: active.append("wttr.in")
-    if config.OPENWEATHER_API_KEY: active.append("OpenWeatherMap")
-    if config.WEATHERAPI_KEY: active.append("WeatherAPI")
-    if config.QWEATHER_API_KEY: active.append("和风天气")
-    if config.WINDY_API_KEY: active.append("Windy")
     print(", ".join(active) if active else "无")
-    print(f"  免费源: {sum([config.OPEN_METEO_ENABLED, config.OPEN_METEO_GFS_ENABLED, config.OPEN_METEO_ECMWF_ENABLED, config.SEVENTIMER_ENABLED, config.WTTR_ENABLED])} 个")
-    print(f"  需Key源: {sum([bool(config.OPENWEATHER_API_KEY), bool(config.WEATHERAPI_KEY), bool(config.QWEATHER_API_KEY), bool(config.WINDY_API_KEY)])} 个")
+    print(f"  免费源: {sum([config.OPEN_METEO_ENABLED, config.OPEN_METEO_GFS_ENABLED, config.OPEN_METEO_ECMWF_ENABLED, config.WTTR_ENABLED])} 个")
+    print(f"  地图引擎: {'高德地图' if config.AMAP_JS_KEY else '未配置（需设置 AMAP_JS_KEY）'}")
     print(f"{'='*50}\n")
 
     app.run(

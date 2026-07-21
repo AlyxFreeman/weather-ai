@@ -2,9 +2,9 @@
 路线天气分析模块
 
 功能：
-1. 调用 OSRM 获取路线
+1. 调用高德地图 API 获取路线（支持驾驶/步行/骑行）
 2. 沿路线采样天气点
-3. 对各采样点并发查询天气
+3. 对各采样点并发查询天气（GCJ-02→WGS-84 坐标转换后查询）
 4. AI 分析沿途天气变化
 """
 import math
@@ -15,61 +15,152 @@ import config
 from collections import Counter
 
 
-# OSRM 公共实例（免费，无需 Key）
-OSRM_BASE = "https://router.project-osrm.org/route/v1"
+# 高德地图 Web 服务 API
+AMAP_BASE = "https://restapi.amap.com/v5"
 
 # Open-Meteo 高程 API（免费，无需 Key，支持批量）
 ELEVATION_API = "https://api.open-meteo.com/v1/elevation"
 
 
+# ============ GCJ-02 ↔ WGS-84 坐标转换 ============
+
+_PI = math.pi
+_A = 6378245.0           # 长半轴
+_EE = 0.00669342162296594323  # 偏心率平方
+
+
+def _transform_lat(lng, lat):
+    ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + \
+          0.1 * lng * lat + 0.2 * math.sqrt(abs(lng))
+    ret += (20.0 * math.sin(6.0 * lng * _PI) + 20.0 * math.sin(2.0 * lng * _PI)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(lat * _PI) + 40.0 * math.sin(lat / 3.0 * _PI)) * 2.0 / 3.0
+    ret += (160.0 * math.sin(lat / 12.0 * _PI) + 320 * math.sin(lat * _PI / 30.0)) * 2.0 / 3.0
+    return ret
+
+
+def _transform_lng(lng, lat):
+    ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + \
+          0.1 * lng * lat + 0.1 * math.sqrt(abs(lng))
+    ret += (20.0 * math.sin(6.0 * lng * _PI) + 20.0 * math.sin(2.0 * lng * _PI)) * 2.0 / 3.0
+    ret += (20.0 * math.sin(lng * _PI) + 40.0 * math.sin(lng / 3.0 * _PI)) * 2.0 / 3.0
+    ret += (150.0 * math.sin(lng / 12.0 * _PI) + 300.0 * math.sin(lng / 30.0 * _PI)) * 2.0 / 3.0
+    return ret
+
+
+def gcj02_to_wgs84(lng, lat):
+    """
+    GCJ-02（火星坐标系）→ WGS-84（GPS 标准坐标系）
+    高德地图返回的坐标是 GCJ-02，天气数据源使用 WGS-84。
+    """
+    dlat = _transform_lat(lng - 105.0, lat - 35.0)
+    dlng = _transform_lng(lng - 105.0, lat - 35.0)
+    radlat = lat / 180.0 * _PI
+    magic = math.sin(radlat)
+    magic = 1 - _EE * magic * magic
+    sqrtmagic = math.sqrt(magic)
+    dlat = (dlat * 180.0) / ((_A * (1 - _EE)) / (magic * sqrtmagic) * _PI)
+    dlng = (dlng * 180.0) / (_A / sqrtmagic * math.cos(radlat) * _PI)
+    mglat = lat + dlat
+    mglng = lng + dlng
+    return lng * 2 - mglng, lat * 2 - mglat
+
+
 def get_route(start_lat, start_lng, end_lat, end_lng, waypoints=None, mode="car"):
     """
-    调用 OSRM 获取路线。
+    调用高德地图路径规划 API 获取路线。
 
     参数:
-        start_lat, start_lng: 起点经纬度
-        end_lat, end_lng: 终点经纬度
-        waypoints: 途径点列表 [{"lat": ..., "lng": ...}, ...]
+        start_lat, start_lng: 起点经纬度（GCJ-02）
+        end_lat, end_lng: 终点经纬度（GCJ-02）
+        waypoints: 途径点列表 [{"lat": ..., "lng": ...}, ...]（GCJ-02）
         mode: 出行方式 ("car"/"bike"/"foot")
 
     返回:
         {
-            "geometry": GeoJSON LineString,
+            "geometry": {"coordinates": [[lng, lat], ...]},  # GCJ-02 坐标
             "distance_m": 总距离(米),
             "duration_s": 预计时间(秒),
             "distance_km": 总距离(km),
             "duration_text": 预计时间(可读文本),
         }
     """
-    profile_map = {"car": "driving", "bike": "cycling", "foot": "walking"}
-    profile = profile_map.get(mode, "driving")
+    if not config.AMAP_WEB_KEY:
+        raise ValueError("未配置高德 Web 服务 Key，请在 config.py 中设置 AMAP_WEB_KEY")
 
-    # 构建坐标字符串（支持途径点）
-    coords_parts = [f"{start_lng},{start_lat}"]
-    if waypoints:
-        for wp in waypoints:
-            coords_parts.append(f"{wp['lng']},{wp['lat']}")
-    coords_parts.append(f"{end_lng},{end_lat}")
-    coords_str = ";".join(coords_parts)
+    # 高德 API 版本: driving=v5, walking=v3, bicycling=v4
+    if mode == "car":
+        url = f"{AMAP_BASE}/direction/driving"
+    elif mode == "foot":
+        url = "https://restapi.amap.com/v3/direction/walking"
+    elif mode == "bike":
+        url = "https://restapi.amap.com/v4/direction/bicycling"
+    else:
+        url = f"{AMAP_BASE}/direction/driving"
 
-    url = (
-        f"{OSRM_BASE}/{profile}/"
-        f"{coords_str}"
-        f"?overview=full&geometries=geojson&annotations=true"
-    )
-    resp = requests.get(url, timeout=15)
+    params = {
+        "key": config.AMAP_WEB_KEY,
+        "origin": f"{start_lng},{start_lat}",
+        "destination": f"{end_lng},{end_lat}",
+    }
+
+    # 驾驶模式支持途径点
+    if mode == "car" and waypoints:
+        wp_str = ";".join(f"{wp['lng']},{wp['lat']}" for wp in waypoints)
+        params["waypoints"] = wp_str
+
+    # v5 driving 需要 show_fields 获取耗时和折线
+    if mode == "car":
+        params["show_fields"] = "cost,polyline"
+
+    resp = requests.get(url, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json()
 
-    if data.get("code") != "Ok" or not data.get("routes"):
-        raise ValueError(f"OSRM 路线规划失败: {data.get('message', '未知错误')}")
+    # 高德 API status: "1" 成功, "0" 失败
+    if str(data.get("status", "0")) != "1":
+        err_msg = data.get("info") or data.get("errmsg") or "未知错误"
+        raise ValueError(f"高德路径规划失败: {err_msg}")
 
-    route = data["routes"][0]
-    distance_m = route["distance"]
-    duration_s = route["duration"]
+    # v5 返回 route.paths, v4 bicycling 返回 data.paths
+    route_data = data.get("route", data.get("data", {}))
+    paths = route_data.get("paths", [])
+    if not paths:
+        raise ValueError(f"高德路径规划未返回路线数据: {data}")
+
+    path = paths[0]
+    distance_m = int(float(path.get("distance", 0)))
+
+    # 获取耗时: v5 在 cost.duration, v4 直接在 duration
+    if "cost" in path:
+        duration_s = int(float(path["cost"].get("duration", 0)))
+    elif "duration" in path:
+        duration_s = int(float(path["duration"]))
+    else:
+        duration_s = 0
+
+    # 提取路线坐标（高德返回 steps 中每段都有 polyline）
+    all_coords = []
+    steps = path.get("steps", [])
+    for step in steps:
+        polyline = step.get("polyline", "")
+        if not polyline:
+            continue
+        # 高德 polyline 格式: "lng,lat;lng,lat;..."
+        points = polyline.split(";")
+        for pt in points:
+            parts = pt.split(",")
+            if len(parts) >= 2:
+                lng = float(parts[0])
+                lat = float(parts[1])
+                all_coords.append([lng, lat])
+
+    if not all_coords:
+        raise ValueError("高德路径规划返回的路线坐标为空")
+
+    print(f"[路线] 高德路径规划成功: {len(all_coords)} 个坐标点, {distance_m/1000:.1f}km, 预计 {_format_duration(duration_s)}")
 
     return {
-        "geometry": route["geometry"],
+        "geometry": {"coordinates": all_coords},  # GCJ-02 坐标
         "distance_m": distance_m,
         "duration_s": duration_s,
         "distance_km": round(distance_m / 1000, 1),
@@ -96,6 +187,7 @@ def sample_route_points(geometry, interval_km=None, max_samples=12, min_interval
 
     返回:
         [{"lat": ..., "lon": ..., "distance_m": ...}, ...]
+        注意: lat/lon 为 GCJ-02 坐标（来自高德路线），天气查询时需转为 WGS-84
     """
     coords = geometry["coordinates"]  # GeoJSON: [lng, lat]
     total_points = len(coords)
@@ -179,8 +271,10 @@ def fetch_elevations(samples):
 
     for batch_start in range(0, len(samples), BATCH_SIZE):
         batch = samples[batch_start:batch_start + BATCH_SIZE]
-        lats = ",".join(f"{pt['lat']:.6f}" for pt in batch)
-        lons = ",".join(f"{pt['lon']:.6f}" for pt in batch)
+        # 采样点坐标是 GCJ-02，高程 API 需要 WGS-84
+        wgs84_coords = [gcj02_to_wgs84(pt["lon"], pt["lat"]) for pt in batch]
+        lats = ",".join(f"{c[1]:.6f}" for c in wgs84_coords)  # wgs84_lat
+        lons = ",".join(f"{c[0]:.6f}" for c in wgs84_coords)  # wgs84_lng
 
         try:
             resp = requests.get(
@@ -318,15 +412,89 @@ def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
 
     def _get_forecast_at_time(sources_data, target_dt):
         """
-        从多个数据源的预报中，找到与目标时间最接近的日期的预报数据。
+        从多个数据源的预报中，找到与目标时间最接近的预报数据。
+        优先使用逐小时数据（精确到小时），回退到日预报。
         返回融合后的预报天气对象，如果无法获取则返回 None。
         """
         if not target_dt:
             return None
 
         target_date = target_dt.strftime("%Y-%m-%d")
-        forecast_data = []  # 收集所有源在目标日期的预报
+        target_hour = target_dt.strftime("%Y-%m-%dT%H:00")
 
+        # 第一优先级：逐小时数据（精确到到达时刻）
+        hourly_data = []
+        for s in sources_data["sources"]:
+            if s["status"] != "ok":
+                continue
+            hourly = s.get("hourly")
+            if not hourly:
+                continue
+            # 找到最接近目标时间的逐小时数据点
+            best = None
+            best_diff = float("inf")
+            for h in hourly:
+                # h["time"] 格式: "2025-07-05T14:00"
+                h_time = h.get("time", "")
+                if not h_time:
+                    continue
+                try:
+                    h_dt = datetime.datetime.strptime(h_time[:16], "%Y-%m-%dT%H:%M")
+                    diff = abs((h_dt - target_dt).total_seconds())
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = h
+                except (ValueError, TypeError):
+                    continue
+            if best and best_diff <= 3 * 3600:  # 3小时内才可用
+                hourly_data.append(best)
+
+        if hourly_data:
+            # 使用逐小时数据融合
+            temps = [h["temperature"] for h in hourly_data if h.get("temperature") is not None]
+            feels = [h["feels_like"] for h in hourly_data if h.get("feels_like") is not None]
+            humidities = [h["humidity"] for h in hourly_data if h.get("humidity") is not None]
+            wind_speeds = [h["wind_speed"] for h in hourly_data if h.get("wind_speed") is not None]
+            wind_dirs = [h["wind_direction_deg"] for h in hourly_data if h.get("wind_direction_deg") is not None]
+            precip_probs = [h["precipitation_prob"] for h in hourly_data]
+            precip_vals = [h["precipitation"] for h in hourly_data]
+            weather_texts = [h["weather_text"] for h in hourly_data]
+            weather_emojis = [h["weather_emoji"] for h in hourly_data]
+
+            avg_temp = round(statistics.mean(temps), 1) if temps else 0
+            avg_feels = round(statistics.mean(feels), 1) if feels else 0
+            avg_humidity = round(statistics.mean(humidities)) if humidities else 0
+            avg_wind = round(statistics.mean(wind_speeds), 1) if wind_speeds else 0
+            avg_precip = round(statistics.mean(precip_vals), 1) if precip_vals else 0
+            avg_precip_prob = round(statistics.mean(precip_probs)) if precip_prob else 0
+
+            # 风向向量平均
+            if wind_dirs:
+                sin_sum = sum(math.sin(math.radians(d)) for d in wind_dirs)
+                cos_sum = sum(math.cos(math.radians(d)) for d in wind_dirs)
+                avg_wind_deg = int((math.degrees(math.atan2(sin_sum, cos_sum)) + 360) % 360)
+            else:
+                avg_wind_deg = 0
+
+            weather_counter = Counter(weather_texts)
+            main_weather = weather_counter.most_common(1)[0][0] if weather_texts else "未知"
+            emoji_counter = Counter(weather_emojis)
+            main_emoji = emoji_counter.most_common(1)[0][0] if weather_emojis else "❓"
+
+            return {
+                "temperature": avg_temp,
+                "feels_like": avg_feels,
+                "humidity": avg_humidity,
+                "wind_speed": avg_wind,
+                "wind_direction_deg": avg_wind_deg,
+                "weather_text": main_weather,
+                "weather_emoji": main_emoji,
+                "precipitation": avg_precip,
+                "precipitation_prob": avg_precip_prob,
+            }
+
+        # 回退：日预报数据（精度低，风速为全天最大值）
+        forecast_data = []
         for s in sources_data["sources"]:
             if s["status"] != "ok":
                 continue
@@ -346,7 +514,7 @@ def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
         if not forecast_data:
             return None
 
-        # 融合预报数据
+        # 融合日预报数据
         temps_max = [d["temp_max"] for d in forecast_data]
         temps_min = [d["temp_min"] for d in forecast_data]
         precip = [d["precipitation"] for d in forecast_data]
@@ -377,8 +545,11 @@ def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
 
     def fetch_one(pt):
         try:
-            # 调用天气数据源获取原始数据
-            result = weather_sources.fetch_all_sources(pt["lat"], pt["lon"])
+            # 采样点坐标是 GCJ-02（来自高德路线），需转为 WGS-84 查天气
+            wgs84_lng, wgs84_lat = gcj02_to_wgs84(pt["lon"], pt["lat"])
+
+            # 调用天气数据源获取原始数据（使用 WGS-84 坐标）
+            result = weather_sources.fetch_all_sources(wgs84_lat, wgs84_lng)
 
             # 多源融合：获取融合后的当前天气
             weather = _fuse_weather_data(result)
@@ -405,6 +576,14 @@ def fetch_weather_along_route(samples, city_name_hint="", departure_time=None):
                         weather["precipitation"] = forecast.get("precipitation", 0)
                         weather["precipitation_prob"] = forecast.get("precipitation_prob", 0)
                         weather["wind_speed"] = forecast.get("wind_speed", weather["wind_speed"])
+                        # 逐小时数据还会提供体感温度、湿度、风向
+                        if "feels_like" in forecast:
+                            weather["feels_like"] = forecast["feels_like"]
+                        if "humidity" in forecast:
+                            weather["humidity"] = forecast["humidity"]
+                        if "wind_direction_deg" in forecast:
+                            weather["wind_direction_deg"] = forecast["wind_direction_deg"]
+                            weather["wind_direction"] = weather_sources._deg_to_dir(forecast["wind_direction_deg"])
                         weather["is_forecast"] = True
 
             return {**pt, "weather": weather, "raw": result}
@@ -508,48 +687,41 @@ def _format_duration(seconds):
 
 
 def _statistical_route_analysis(samples, route_info, temp_spread):
-    """统计模式：生成沿途天气分析文本"""
+    """统计模式：生成简洁的沿途天气分析文本（不罗列原始采样数据）"""
     lines = []
-    lines.append(f"【沿途天气分析】路线全长 {route_info['distance_km']} km，共采样 {len(samples)} 个点。")
+    lines.append(f"路线全长 {route_info['distance_km']} km，共采样 {len(samples)} 个点。")
 
     # 海拔概况
     elevations = [s.get("elevation") for s in samples if s.get("elevation") is not None]
     if elevations:
         elev_min, elev_max = min(elevations), max(elevations)
         elev_diff = elev_max - elev_min
-        lines.append(f"沿途海拔 {elev_min}m ~ {elev_max}m（最大高差 {elev_diff}m）。")
-        if elev_diff >= 500:
-            lines.append(f"⚠️ 沿途海拔变化显著（{elev_diff}m），高海拔路段气温可能低 "
-                         f"{round(elev_diff * 0.006, 1)}°C 以上，需注意结冰和横风风险。")
+        lines.append(f"沿途海拔 {elev_min}m ~ {elev_max}m，最大高差 {elev_diff}m。")
 
-    # 温差分析
+    # 温差与总体天气
     temps = [s["weather"]["temperature"] for s in samples]
     if temp_spread <= 1:
         lines.append(f"沿途温差极小（仅 {temp_spread}°C），天气条件稳定。")
     elif temp_spread <= 3:
         lines.append(f"沿途温差 {temp_spread}°C，属于正常范围。")
     else:
-        lines.append(f"⚠️ 沿途温差较大（{temp_spread}°C），不同路段天气可能明显不同，请注意。")
+        lines.append(f"沿途温差较大（{temp_spread}°C），不同路段天气可能明显不同。")
 
-    # 找出有降水的路段
-    rain_sections = []
-    for i, s in enumerate(samples):
-        w = s["weather"]
-        if w and w.get("precipitation_prob", 0) >= 50:
-            section = f"距起点 {s['distance_km']}km 处（{w['weather_text']}，降水概率 {w['precipitation_prob']}%）"
-            rain_sections.append(section)
-
-    if rain_sections:
-        lines.append(f"\n⚠️ 以下路段可能有降水：\n  - " + "\n  - ".join(rain_sections))
+    # 降水路段汇总（只给概览，不罗列每个点）
+    rain_samples = [s for s in samples if s["weather"] and s["weather"].get("precipitation_prob", 0) >= 50]
+    if rain_samples:
+        rain_kms = [s["distance_km"] for s in rain_samples]
+        max_prob = max(s["weather"]["precipitation_prob"] for s in rain_samples)
+        lines.append(f"沿途约 {len(rain_samples)} 个采样点降水概率 ≥50%，分布在 {min(rain_kms)}km ~ {max(rain_kms)}km 之间，最高降水概率 {max_prob}%。")
     else:
-        lines.append("\n沿途无明显降水路段，天气较为干燥。")
+        lines.append("沿途无明显降水，天气较为干燥。")
 
-    # 风力分析
+    # 大风路段汇总
     windy = [s for s in samples if s["weather"] and s["weather"].get("wind_speed", 0) >= 10]
     if windy:
-        lines.append(f"\n💨 以下路段风力较大（≥10m/s），注意行车安全：")
-        for s in windy:
-            lines.append(f"  - 距起点 {s['distance_km']}km：{s['weather']['wind_speed']}m/s")
+        wind_kms = [s["distance_km"] for s in windy]
+        max_wind = max(s["weather"]["wind_speed"] for s in windy)
+        lines.append(f"沿途有 {len(windy)} 个采样点风速 ≥10m/s（{min(wind_kms)}km ~ {max(wind_kms)}km），最大风速 {max_wind}m/s，注意行车安全。")
 
     # 生成建议
     recs = _generate_route_recommendations(samples, route_info)
@@ -606,9 +778,23 @@ def _ai_analyze_route(samples, route_info, temp_spread):
 
     client = OpenAI(api_key=config.AI_API_KEY, base_url=config.AI_BASE_URL)
 
-    # 构造采样点摘要
+    # 构造采样点摘要：采样点过多时做降采样，控制 Token 消耗
+    MAX_AI_SAMPLES = 24
+    ai_samples = samples
+    if len(samples) > MAX_AI_SAMPLES:
+        # 保留起点、终点，以及中间均匀分布的点，同时加入极值点
+        step = len(samples) // (MAX_AI_SAMPLES - 2)
+        indices = set(range(0, len(samples), step))
+        indices.add(0)
+        indices.add(len(samples) - 1)
+        # 加入降水概率最高和风速最高的点
+        max_rain_idx = max(range(len(samples)), key=lambda i: samples[i]["weather"].get("precipitation_prob", 0) if samples[i]["weather"] else -1)
+        max_wind_idx = max(range(len(samples)), key=lambda i: samples[i]["weather"].get("wind_speed", 0) if samples[i]["weather"] else -1)
+        indices.update([max_rain_idx, max_wind_idx])
+        ai_samples = [samples[i] for i in sorted(indices)][:MAX_AI_SAMPLES]
+
     sample_lines = []
-    for i, s in enumerate(samples):
+    for i, s in enumerate(ai_samples):
         w = s["weather"]
         if not w:
             continue
